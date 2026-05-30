@@ -257,7 +257,7 @@ sealed class UiState<out T> {
 }
 ```
 
-Used by: ticket list, ticket detail (load + actions), create ticket (submit).
+Used by **ticket list** and **ticket detail** (load). Create ticket and login use dedicated form state classes (`CreateTicketUiState`, `LoginUiState`). Ticket detail actions use `ActionState` for status/priority updates.
 
 ---
 
