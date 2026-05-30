@@ -1,7 +1,5 @@
 # Panini Support App — PoC
 
-**Course:** Diseño y Programación de Plataformas Móviles — I Ciclo 2026  
-**Exam:** Examen II (15%)  
 **Context:** Support ticket management system for Panini FIFA World Cup 2026 album operations.
 
 ---
