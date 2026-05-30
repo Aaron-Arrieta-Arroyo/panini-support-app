@@ -24,8 +24,8 @@ The app replaces the current email/spreadsheet workflow with a structured ticket
 
 1. Clone the repository:
    ```bash
-   git clone <repo-url>
-   cd PaniniSupportApp
+   git clone https://github.com/Aaron-Arrieta-Arroyo/Panini-Support-App.git
+   cd Panini-Support-App
    ```
 
 2. Open the `app/` folder in Android Studio as an Android project (or open the root and let Gradle sync).
