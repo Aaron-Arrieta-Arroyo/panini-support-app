@@ -1,39 +1,66 @@
 # Technical Decisions — Panini Support App
 
 Handoff document for engineers continuing the project.  
-Explains **what** was built, **why** each tool was chosen, and **how** it maps to the API contract and the running app.
+This file is the single source of truth for `/docs`. It explains **what** was built, **why** each decision was made, and **how** it maps to the running app and the API contract.
+
+**Audience:** mobile/backend engineers joining the Panini Support PoC.  
+**Related artifacts:** `/contracts/tickets-api.yaml`, `/video/demo-link.md`, root `README.md`.
 
 ---
 
-## 1. Architectural pattern: MVVM + Repository
+## Table of contents
 
-### Why MVVM
+| Section | Topic |
+|---|---|
+| [1](#1-architectural-decisions) | Architectural decisions (MVVM + Repository) |
+| [2](#2-general-system-flow) | General system flow (startup → screens → data → events) |
+| [3](#3-application-screens) | Application screens and navigation |
+| [4](#4-event-based-communication) | Event-based communication (SharedFlow) |
+| [5](#5-feature-flags) | Feature Flags |
+| [6](#6-data-layer-and-api-alignment) | Data layer and API contract alignment |
+| [7](#7-mock-data) | Mock data |
+| [8](#8-ui-and-state-handling) | UI and state handling |
+| [9](#9-package-map) | Package map (what each folder/file does) |
+| [10](#10-extending-the-project) | Extending the project |
 
-MVVM separates UI (Composables) from state (ViewModel) and data (Repository).  
-The concrete benefit for this project:
+---
 
-- The ViewModel does not import any Android UI types (`Context`, `Activity`, etc.), so it can be tested without an emulator.
-- The Composable only observes a `StateFlow` — it does not decide or process, it only renders.
-- The Repository is an interface: switching from mock to a real backend does not touch the ViewModel or the screen.
+## 1. Architectural decisions
 
-### Why not Clean Architecture with UseCases
+### 1.1 Pattern: MVVM + Repository
 
-A short-term PoC with a small team **does not justify** the overhead of UseCases. Adding them here would be complexity without real benefit today.
+MVVM separates three concerns:
 
-If the project grows: inserting UseCases between ViewModel and Repository is a local change that does not require touching screens or repositories.
+| Layer | Responsibility | In this project |
+|---|---|---|
+| **View (Composable)** | Draw UI, react to state | `*Screen.kt` files |
+| **ViewModel** | Hold state, run screen logic | `*ViewModel.kt` files |
+| **Repository** | Provide data (mock or remote) | `TicketRepository` interface + implementations |
 
-### Layer structure
+**Why MVVM here**
+
+- ViewModels do not import Android UI types (`Context`, `Activity`), so they can be unit-tested without an emulator.
+- Composables observe `StateFlow` and only render — they do not fetch data or emit domain events directly.
+- The Repository is an **interface**. Swapping mock → remote backend does not touch ViewModels or Composables.
+
+**Why not Clean Architecture with UseCases**
+
+A short-term PoC with a small team does not justify UseCase overhead today. If the project grows, UseCases can be inserted between ViewModel and Repository without changing screens.
+
+### 1.2 Layer structure
 
 ```
 presentation/   Composables + ViewModels (observe StateFlow)
 domain/         Business models + TicketRepository interface
-data/           DTOs, Retrofit, MockTicketRepository
-core/           Cross-cutting tools (events, feature flags)
+data/           DTOs, Retrofit, MockTicketRepository, RemoteTicketRepository
+core/           TicketEventBus, FeatureFlags (cross-cutting)
 ```
 
-### Dependency injection
+**Golden rule:** screens and ViewModels never call Retrofit or `MockData` directly. They only know `TicketRepository`.
 
-Manual DI lives in `SupportApp.kt`:
+### 1.3 Dependency injection
+
+Manual DI lives in `SupportApp.kt` — no Hilt/Koin (intentional for PoC scope):
 
 ```kotlin
 class AppContainer {
@@ -41,33 +68,193 @@ class AppContainer {
 }
 ```
 
-`MainActivity` reads `SupportApp.container.ticketRepository` and passes it into navigation. No Hilt/Koin — intentional for PoC scope.
+`MainActivity` reads `SupportApp.container.ticketRepository` and passes it into `AppNavigation`.
+
+**To activate the real backend:** change one line to `RemoteTicketRepository(NetworkClient.ticketApiService)`.
+
+### 1.4 Technology choices (technical justification)
+
+| Choice | Why |
+|---|---|
+| **Jetpack Compose** | Declarative UI, less boilerplate than XML, fits MVVM with state observation |
+| **StateFlow** | ViewModel state exposed to Composables; lifecycle-aware collection via `collectAsStateWithLifecycle` |
+| **SharedFlow** | Event bus decouples screens; multiple ViewModels can listen without references to each other |
+| **Navigation Compose** | Type-safe routes in `Screen.kt`, single `NavHost` in `AppNavigation.kt` |
+| **Retrofit + Gson** | Matches OpenAPI contract in `/contracts`; ready when backend exists |
+| **Coroutines + suspend** | Repository methods are async; mock uses `delay()` to simulate network latency |
+| **Manual DI** | One swap point in `AppContainer`; no framework setup cost for a PoC |
 
 ---
 
-## 2. Application screens
+## 2. General system flow
 
-| Screen | Route | ViewModel | Data source |
-|---|---|---|---|
-| Login | `login` | `LoginViewModel` | Simulated locally (`admin` / `admin123`) — not wired to `POST /auth/login` yet |
-| Ticket list | `ticket_list` | `TicketListViewModel` | `TicketRepository.getTickets()` |
-| Ticket detail | `ticket_detail/{ticketId}` | `TicketDetailViewModel` | `TicketRepository.getTicketById()` |
-| Create ticket | `create_ticket` | `CreateTicketViewModel` | `TicketRepository.createTicket()` |
-| Settings | `settings` | None | Reads/writes `FeatureFlags` directly |
+This section describes the **end-to-end flow** from app launch to ticket updates.
 
-All ticket screens depend on `TicketRepository`, never on Retrofit or mock classes directly.
+### 2.1 Application startup
+
+```
+Android OS
+  → AndroidManifest.xml (LAUNCHER → MainActivity, Application → SupportApp)
+  → MainActivity.onCreate()
+      → enableEdgeToEdge()
+      → SupportApp.container.ticketRepository  (MockTicketRepository today)
+      → setContent { SupportAppTheme { AppNavigation(...) } }
+  → AppNavigation startDestination = login
+  → LoginScreen
+```
+
+**Files involved:** `AndroidManifest.xml`, `MainActivity.kt`, `SupportApp.kt`, `AppNavigation.kt`.
+
+### 2.2 User navigation flow
+
+```
+Login (admin / admin123, simulated)
+  → Ticket List  ←── main hub after login
+        ├── tap ticket  → Ticket Detail (ticketId in route)
+        ├── FAB "+"     → Create Ticket   (hidden if ticketCreationEnabled = false)
+        └── gear icon   → Settings        (Feature Flag toggles)
+```
+
+After successful login, the login route is removed from the back stack (`popUpTo` inclusive), so the user cannot return to login with the back button.
+
+**Files involved:** `Screen.kt`, `AppNavigation.kt`, each `*Screen.kt`.
+
+### 2.3 Data flow (read/write tickets)
+
+All ticket operations follow the same path:
+
+```
+Composable (*Screen)
+  → observes ViewModel StateFlow
+  → user action triggers ViewModel method
+  → ViewModel calls TicketRepository (interface)
+  → MockTicketRepository (today) OR RemoteTicketRepository (production)
+        Mock:  MockData in memory + delay()
+        Remote: TicketApiService → JSON DTO → toDomain() → Ticket
+  → ViewModel updates StateFlow
+  → Composable recomposes
+```
+
+**Repository methods (domain contract):**
+
+| Method | Used by | Purpose |
+|---|---|---|
+| `getTickets()` | `TicketListViewModel` | Load list on screen open |
+| `getTicketById(id)` | `TicketDetailViewModel` | Load one ticket |
+| `createTicket(ticket)` | `CreateTicketViewModel` | Create new ticket |
+| `updateTicketStatus(id, status)` | `TicketDetailViewModel` | Change lifecycle state |
+| `updateTicketPriority(id, priority)` | `TicketDetailViewModel` | Change priority |
+
+Login does **not** use `TicketRepository`. It is simulated in `LoginViewModel` (`admin` / `admin123`). `POST /auth/login` exists in Retrofit for a future phase.
+
+### 2.4 Event flow (list updates without reload)
+
+When a ticket is created or modified on another screen, the **list must update without calling `getTickets()` again**.
+
+```
+                    ┌─────────────────────┐
+                    │   TicketEventBus    │
+                    │   (SharedFlow)      │
+                    └──────────▲──────────┘
+                               │ emit
+         ┌─────────────────────┼─────────────────────┐
+         │                     │                     │
+ CreateTicketVM          TicketDetailVM         (future VMs)
+ TicketCreated           StatusUpdated
+                         PriorityUpdated
+                               │
+                               │ collect
+                               ▼
+                    ┌─────────────────────┐
+                    │ TicketListViewModel │
+                    │ observeEvents()     │
+                    │ → update local list │
+                    │ → re-sort by priority│
+                    └─────────────────────┘
+                               │
+                               ▼
+                    TicketListScreen recomposes
+```
+
+**Emitters (who publishes events):**
+
+| Event | Emitted after | By |
+|---|---|---|
+| `TicketCreated` | `repository.createTicket()` succeeds | `CreateTicketViewModel` |
+| `StatusUpdated` | `repository.updateTicketStatus()` succeeds | `TicketDetailViewModel` |
+| `PriorityUpdated` | `repository.updateTicketPriority()` succeeds | `TicketDetailViewModel` |
+
+**Subscriber (who reacts):** `TicketListViewModel.observeEvents()` — runs for the lifetime of the list ViewModel in `viewModelScope`.
+
+### 2.5 Feature Flag flow
+
+```
+SettingsScreen
+  → user toggles Switch
+  → FeatureFlags.ticketCreationEnabled or priorityUpdateEnabled changes (mutableStateOf)
+  → any Composable reading the flag recomposes immediately
+        TicketListScreen: FAB show/hide
+        TicketDetailScreen: "Change Priority" button show/hide
+```
+
+No ViewModel is required for flags — intentional simplicity for this PoC.
+
+### 2.6 Complete scenario: create a ticket and see it in the list
+
+```
+1. User opens Create Ticket (FAB on list)
+2. CreateTicketScreen collects form input via CreateTicketViewModel
+3. User taps "Create Ticket"
+4. CreateTicketViewModel.createTicket()
+     a. Validates title, description, supplier
+     b. repository.createTicket(ticket)  → MockTicketRepository assigns TKT-XXX
+     c. TicketEventBus.emit(TicketCreated(created))
+     d. onSuccess → navigation popBackStack() → back to list
+5. TicketListViewModel (already listening) receives TicketCreated
+     a. insertAndSort() adds ticket to local Success state
+     b. list re-sorted by Priority.sortOrder (HIGH first)
+6. TicketListScreen shows new ticket — no loadTickets() call
+```
+
+### 2.7 Complete scenario: change priority and see reorder
+
+```
+1. User opens ticket detail from list
+2. TicketDetailViewModel.loadTicket() → repository.getTicketById()
+3. User taps "Change Priority" → selects HIGH (if priorityUpdateEnabled)
+4. TicketDetailViewModel.updatePriority(HIGH)
+     a. repository.updateTicketPriority()
+     b. TicketEventBus.emit(PriorityUpdated)
+5. User navigates back to list
+6. TicketListViewModel already updated local list and re-sorted
+7. Ticket appears higher in the list with red "High" badge
+```
 
 ---
 
-## 3. Event-based communication: SharedFlow
+## 3. Application screens
 
-### Problem it solves
+| Screen | Route | Composable | ViewModel | Data / state source |
+|---|---|---|---|---|
+| Login | `login` | `LoginScreen` | `LoginViewModel` | Simulated auth (`admin` / `admin123`) |
+| Ticket list | `ticket_list` | `TicketListScreen` | `TicketListViewModel` | `TicketRepository.getTickets()` + event bus |
+| Ticket detail | `ticket_detail/{ticketId}` | `TicketDetailScreen` | `TicketDetailViewModel` | `getTicketById`, `updateStatus`, `updatePriority` |
+| Create ticket | `create_ticket` | `CreateTicketScreen` | `CreateTicketViewModel` | `createTicket()` + emits `TicketCreated` |
+| Settings | `settings` | `SettingsScreen` | None | `FeatureFlags` toggles |
 
-When the user creates a ticket or changes its status or priority, the list screen must update **without the user having to go back and reload**.
+Navigation is centralized in `AppNavigation.kt`. Routes are defined in `Screen.kt` to avoid magic strings.
 
-The obvious solution (calling `loadTickets()` after every action) would work, but it would re-run the full repository call — in production that is an unnecessary network request.
+---
 
-### Solution: `TicketEventBus` with `SharedFlow`
+## 4. Event-based communication
+
+### 4.1 Problem
+
+After creating or editing a ticket, the list screen must reflect changes **without** the user manually refreshing or re-fetching the full ticket list from the repository (which would be a full network round-trip in production).
+
+### 4.2 Solution
+
+**`TicketEvent.kt`** — sealed class defining the three domain events:
 
 ```kotlin
 sealed class TicketEvent {
@@ -77,6 +264,8 @@ sealed class TicketEvent {
 }
 ```
 
+**`TicketEventBus.kt`** — singleton bus:
+
 ```kotlin
 object TicketEventBus {
     private val _events = MutableSharedFlow<TicketEvent>()
@@ -85,61 +274,37 @@ object TicketEventBus {
 }
 ```
 
-It is an application-level event bus. Any ViewModel can emit or listen.
+### 4.3 Why SharedFlow
 
-**Flow for ticket creation:**
-
-```
-CreateTicketViewModel
-  → repository.createTicket(ticket)
-  → TicketEventBus.emit(TicketCreated)
-
-TicketListViewModel (collector in viewModelScope)
-  → inserts ticket into local list
-  → re-sorts by priority (HIGH sortOrder=0 first)
-  → Composable recomposes
-```
-
-**Flow for status update:**
-
-```
-TicketDetailViewModel
-  → repository.updateTicketStatus(id, status)
-  → TicketEventBus.emit(StatusUpdated)
-
-TicketListViewModel
-  → updates ticket status in local list
-  → Composable recomposes
-```
-
-**Flow for priority update:**
-
-```
-TicketDetailViewModel
-  → repository.updateTicketPriority(id, priority)
-  → TicketEventBus.emit(PriorityUpdated)
-
-TicketListViewModel
-  → updates priority and re-sorts list
-  → Composable recomposes — ticket moves up/down without reload
-```
-
-### Why SharedFlow and not other options
-
-| Alternative | Reason not to use it |
+| Alternative | Reason not used |
 |---|---|
-| Call `loadTickets()` again | Unnecessary re-fetch, not truly reactive |
-| `LiveData` | Requires `LifecycleOwner`, not Kotlin-native |
-| Callback between ViewModels | Tight coupling, hard to maintain |
-| `SharedFlow` ✓ | Lifecycle-independent, supports multiple collectors, native Kotlin coroutines |
+| Call `loadTickets()` after every action | Extra repository/network call; not reactive |
+| `LiveData` | Requires `LifecycleOwner`; not Kotlin-coroutine-native |
+| Direct ViewModel references | Tight coupling between screens |
+| **SharedFlow** ✓ | Lifecycle-independent, multiple collectors, fits coroutines |
 
-`replay = 0` (default): a new collector does not receive past events.
+`replay = 0` (default): late subscribers do not receive stale events.
+
+### 4.4 Listener implementation
+
+`TicketListViewModel` in `init`:
+
+1. `loadTickets()` — initial fetch from repository.
+2. `observeEvents()` — `TicketEventBus.events.collect { ... }` in `viewModelScope`.
+
+Handlers: `insertAndSort`, `updateStatus`, `updatePriorityAndSort`.
 
 ---
 
-## 4. Feature Flags
+## 5. Feature Flags
 
-### Implementation
+### 5.1 Purpose
+
+Enable or disable features at runtime during internal testing **without** a new app release or code change.
+
+### 5.2 Implementation
+
+**File:** `core/featureflags/FeatureFlags.kt`
 
 ```kotlin
 object FeatureFlags {
@@ -148,58 +313,58 @@ object FeatureFlags {
 }
 ```
 
-They use Compose `mutableStateOf`: when the value changes from `SettingsScreen`, every Composable that reads the flag recomposes automatically.
+Compose `mutableStateOf` triggers recomposition in any Composable that reads the property.
 
-| Flag | UI effect |
-|---|---|
-| `ticketCreationEnabled` | Shows/hides the Create Ticket FAB on the list |
-| `priorityUpdateEnabled` | Shows/hides the **Change Priority** button on ticket detail |
+### 5.3 Active flags
 
-Status updates remain available even when priority updates are disabled.
-
----
-
-## 5. Ticket list UI
-
-The list card shows **title**, **priority badge**, **status badge**, **category**, **supplier**, and **created date**. Priority and status use vivid badge colors (red / yellow / green for priority; red / blue / green / gray for status). Full ticket data remains on the detail screen.
-
----
-
-## 6. Networking and API contract alignment
-
-The backend is not deployed yet. The mobile app is ready to consume `/contracts/tickets-api.yaml` via Retrofit.
-
-### Endpoints (contract ↔ `TicketApiService`)
-
-| Method | Path | Retrofit method | Repository method |
+| Flag | Default | UI when ON | UI when OFF |
 |---|---|---|---|
-| `POST` | `/auth/login` | `login()` | Not wired in PoC (login is simulated) |
-| `GET` | `/tickets` | `getTickets()` | `getTickets()` |
-| `POST` | `/tickets` | `createTicket()` | `createTicket()` |
-| `GET` | `/tickets/{id}` | `getTicketById()` | `getTicketById()` |
-| `PATCH` | `/tickets/{id}/status` | `updateTicketStatus()` | `updateTicketStatus()` |
-| `PATCH` | `/tickets/{id}/priority` | `updateTicketPriority()` | `updateTicketPriority()` |
+| `ticketCreationEnabled` | `true` | FAB "+" on ticket list | FAB hidden; create screen unreachable from UI |
+| `priorityUpdateEnabled` | `true` | "Change Priority" on detail | Button hidden; **Change Status** still works |
 
-**Base URL** (contract server + `NetworkClient`): `https://api.panini-support.com/v1`
+**Settings UI:** `SettingsScreen.kt` — toggles write directly to `FeatureFlags` (no ViewModel).
 
-### Domain model ↔ OpenAPI schemas
+### 5.4 Future evolution
 
-| Domain (`domain/model/`) | API schema / field | Wire format |
+Load flag values from Firebase Remote Config or similar in `AppContainer` at startup. Composables and ViewModels stay unchanged.
+
+---
+
+## 6. Data layer and API alignment
+
+The backend is not deployed. The mobile app is structured to consume `/contracts/tickets-api.yaml` via Retrofit when ready.
+
+### 6.1 Endpoints
+
+| Method | Path | Retrofit (`TicketApiService`) | Repository | PoC status |
+|---|---|---|---|---|
+| `POST` | `/auth/login` | `login()` | — | Retrofit ready; UI simulated |
+| `GET` | `/tickets` | `getTickets()` | `getTickets()` | Active via mock |
+| `POST` | `/tickets` | `createTicket()` | `createTicket()` | Active via mock |
+| `GET` | `/tickets/{id}` | `getTicketById()` | `getTicketById()` | Active via mock |
+| `PATCH` | `/tickets/{id}/status` | `updateTicketStatus()` | `updateTicketStatus()` | Active via mock |
+| `PATCH` | `/tickets/{id}/priority` | `updateTicketPriority()` | `updateTicketPriority()` | Active via mock |
+
+**Base URL:** `https://api.panini-support.com/v1` — defined in `NetworkClient.kt` and OpenAPI `servers`.
+
+### 6.2 Domain ↔ API fields
+
+| Domain model | JSON field | Wire values |
 |---|---|---|
-| `Ticket.id` | `Ticket.id` | string, e.g. `TKT-001` |
-| `Ticket.title` | `Ticket.title` | string |
-| `Ticket.description` | `Ticket.description` | string |
-| `Priority` enum | `priority` | `HIGH`, `MEDIUM`, `LOW` |
-| `TicketStatus` enum | `status` | `OPEN`, `IN_PROGRESS`, `RESOLVED`, `CLOSED` |
-| `TicketCategory` enum | `category` | `INVENTORY`, `DISTRIBUTION`, `LOGISTICS`, `SUPPLIER`, `QUALITY` |
+| `Ticket.id` | `id` | `"TKT-001"` |
+| `Ticket.title` | `title` | string |
+| `Ticket.description` | `description` | string |
+| `Priority` | `priority` | `HIGH`, `MEDIUM`, `LOW` |
+| `TicketStatus` | `status` | `OPEN`, `IN_PROGRESS`, `RESOLVED`, `CLOSED` |
+| `TicketCategory` | `category` | `INVENTORY`, `DISTRIBUTION`, `LOGISTICS`, `SUPPLIER`, `QUALITY` |
 | `Ticket.supplier` | `supplier` | string |
-| `Ticket.createdAt` | `created_at` | ISO-8601 date-time |
+| `Ticket.createdAt` | `created_at` | ISO-8601 |
 | `Ticket.assignedTo` | `assigned_to` | string, nullable |
 | `Ticket.affectedQuantity` | `affected_quantity` | integer, nullable |
 
-Display labels (`High`, `Open`, `Inventory`, etc.) exist only in domain enums for UI. The API and DTOs use enum **names** as strings.
+UI labels (`"High"`, `"Open"`, `"Inventory"`) are client-only on enum `label` properties. API and DTOs use enum **names**.
 
-### DTO mapping (`data/dto/`)
+### 6.3 DTOs (Gson)
 
 | OpenAPI schema | Kotlin DTO |
 |---|---|
@@ -211,43 +376,50 @@ Display labels (`High`, `Open`, `Inventory`, etc.) exist only in domain enums fo
 | `UpdateStatusRequest` | `UpdateStatusRequestDto` |
 | `UpdatePriorityRequest` | `UpdatePriorityRequestDto` |
 
-`RemoteTicketRepository` maps `TicketDto` → domain `Ticket` via `toDomain()`.
+`RemoteTicketRepository` converts `TicketDto` → domain `Ticket` via `toDomain()`.
 
-### Activate the real backend
+### 6.4 Switching mock → production
 
-Change **one line** in `SupportApp.kt` (`AppContainer`):
+In `SupportApp.kt` → `AppContainer`:
 
 ```kotlin
-// Current (mock):
-val ticketRepository: TicketRepository = MockTicketRepository()
-
-// Production:
 val ticketRepository: TicketRepository = RemoteTicketRepository(NetworkClient.ticketApiService)
 ```
 
-Next step for auth: call `TicketApiService.login()`, store the JWT, and add a Bearer interceptor in `NetworkClient`.
+Next auth step: call `login()`, persist JWT, add Bearer interceptor in `NetworkClient`.
 
 ---
 
 ## 7. Mock data
 
-`MockData.kt` contains **10 tickets** aligned with the contract examples (e.g. `TKT-001`, Central Distributor S.A., Escazú scenario). Scenarios cover:
+**File:** `data/mock/MockData.kt` — **10 tickets** with realistic Panini/FIFA 2026 scenarios (inventory, logistics, quality, supplier issues). Example `TKT-001` aligns with the OpenAPI create-ticket example (Escazú shortage, Central Distributor S.A.).
 
-- Inventory shortages at points of sale
-- Missed supplier deliveries
-- Batch count errors
-- Packaging damage in transit
-- Invalid QR codes on packs
-- Duplicate ERP orders
-- Tracking system failures
+**File:** `data/mock/MockTicketRepository.kt`
 
-`MockTicketRepository` simulates latency (`delay`) and keeps mutations in memory for the session. Lists are sorted by `Priority.sortOrder` (HIGH=0 first), matching `GET /tickets` contract description.
+- Uses `delay()` (300–600 ms) so Loading states are visible in the UI.
+- Mutations persist in memory for the app session (create, status/priority updates).
+- `getTickets()` returns list sorted by `Priority.sortOrder` (HIGH = 0 first), matching contract description for `GET /tickets`.
 
 ---
 
-## 8. Screen state handling
+## 8. UI and state handling
 
-All async screens use `UiState<T>`:
+### 8.1 Ticket list card
+
+Each card on the list shows:
+
+1. **Title**
+2. **Priority badge** — vivid colors: High red, Medium yellow, Low green
+3. **Status badge** — Open red, In Progress blue, Resolved green, Closed gray
+4. **Category**
+5. **Supplier**
+6. **Created date** (first 10 chars of ISO timestamp)
+
+The detail screen shows all fields (id, description, assignee, affected units, actions).
+
+### 8.2 State patterns
+
+**`UiState<T>`** — used for async load on ticket list and ticket detail:
 
 ```kotlin
 sealed class UiState<out T> {
@@ -257,18 +429,86 @@ sealed class UiState<out T> {
 }
 ```
 
-Used by **ticket list** and **ticket detail** (load). Create ticket and login use dedicated form state classes (`CreateTicketUiState`, `LoginUiState`). Ticket detail actions use `ActionState` for status/priority updates.
+| Screen | State type | Notes |
+|---|---|---|
+| Ticket list | `UiState<List<Ticket>>` | Loading / Success / Error + Retry |
+| Ticket detail (load) | `UiState<Ticket>` | Loading / Success / Error |
+| Ticket detail (actions) | `ActionState` | Idle / Loading / Error for status/priority updates |
+| Create ticket | `CreateTicketUiState` | Form fields + isLoading + error |
+| Login | `LoginUiState` | Form fields + isLoading + error |
+
+Composables branch on state:
+
+```kotlin
+when (val state = uiState) {
+    is UiState.Loading -> CircularProgressIndicator()
+    is UiState.Error   -> Text(state.message)
+    is UiState.Success -> /* render data */
+}
+```
 
 ---
 
-## 9. Continuing the project
+## 9. Package map
 
-**New screen:** add route in `Screen.kt` → composable in `AppNavigation.kt` → Screen + ViewModel under `presentation/`.
+Quick reference for `/app/src/main/java/com/panini/supportapp/`:
 
-**New endpoint:** add to `contracts/tickets-api.yaml` → `TicketApiService.kt` → DTO → `RemoteTicketRepository` + `MockTicketRepository`.
+```
+com.panini.supportapp
+├── MainActivity.kt              Entry point; mounts Compose + passes repository
+├── SupportApp.kt                Application + AppContainer (DI)
+│
+├── core/
+│   ├── events/
+│   │   ├── TicketEvent.kt       Sealed class: TicketCreated, StatusUpdated, PriorityUpdated
+│   │   └── TicketEventBus.kt    SharedFlow emit/collect
+│   └── featureflags/
+│       └── FeatureFlags.kt      ticketCreationEnabled, priorityUpdateEnabled
+│
+├── domain/
+│   ├── model/
+│   │   ├── Ticket.kt            Core entity
+│   │   ├── Priority.kt          HIGH, MEDIUM, LOW + sortOrder
+│   │   ├── TicketStatus.kt      OPEN, IN_PROGRESS, RESOLVED, CLOSED
+│   │   └── TicketCategory.kt    INVENTORY, DISTRIBUTION, etc.
+│   └── repository/
+│       └── TicketRepository.kt  Data contract (interface)
+│
+├── data/
+│   ├── dto/                     Gson models matching OpenAPI
+│   ├── mock/
+│   │   ├── MockData.kt          10 seed tickets
+│   │   └── MockTicketRepository.kt   Active repository (in-memory)
+│   └── remote/
+│       ├── TicketApiService.kt  Retrofit endpoints
+│       ├── NetworkClient.kt     Retrofit + OkHttp singleton
+│       └── RemoteTicketRepository.kt  Production repository (DTO → domain)
+│
+└── presentation/
+    ├── common/UiState.kt        Loading / Success / Error
+    ├── theme/Theme.kt           Material 3 colors
+    ├── navigation/
+    │   ├── Screen.kt            Route definitions
+    │   └── AppNavigation.kt     NavHost wiring
+    ├── login/                   LoginScreen + LoginViewModel
+    ├── ticketlist/              TicketListScreen + TicketListViewModel (event listener)
+    ├── ticketdetail/            TicketDetailScreen + TicketDetailViewModel (event emitter)
+    ├── createticket/            CreateTicketScreen + CreateTicketViewModel (event emitter)
+    └── settings/                SettingsScreen (flag toggles)
+```
 
-**New feature flag:** add property in `FeatureFlags.kt` → read in Composable → toggle in `SettingsScreen.kt`.
+---
 
-**Minimum stack:** Kotlin, Jetpack Compose, Coroutines, StateFlow/SharedFlow, MVVM + Repository, Retrofit + Gson.
+## 10. Extending the project
 
-**Single source of truth for the API:** `/contracts/tickets-api.yaml`
+| Task | Steps |
+|---|---|
+| **New screen** | `Screen.kt` route → `AppNavigation.kt` composable → `*Screen.kt` + `*ViewModel.kt` |
+| **New API endpoint** | `tickets-api.yaml` → `TicketApiService.kt` → DTO → `RemoteTicketRepository` + `MockTicketRepository` |
+| **New feature flag** | Property in `FeatureFlags.kt` → read in Composable → toggle in `SettingsScreen.kt` |
+| **Connect backend** | Swap `AppContainer` repository → JWT in `NetworkClient` |
+| **Demo video** | Record 5–10 min handoff → upload → paste URL in `/video/demo-link.md` |
+
+**Stack required:** Kotlin, Jetpack Compose, Coroutines, StateFlow/SharedFlow, MVVM + Repository, Retrofit + Gson.
+
+**API single source of truth:** `/contracts/tickets-api.yaml`

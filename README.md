@@ -152,4 +152,4 @@ Domain enums (`Priority`, `TicketStatus`, `TicketCategory`) match API enum value
 
 - All mock data represents realistic Panini/FIFA 2026 operational scenarios (no generic placeholder text).
 - Architecture is intentionally simple: MVVM + Repository without use cases.
-- `docs/architecture.md` contains full rationale, screen map, and contract alignment tables.
+- `docs/architecture.md` contains full rationale: architecture, **general system flow**, events, feature flags, API alignment, and package map.
