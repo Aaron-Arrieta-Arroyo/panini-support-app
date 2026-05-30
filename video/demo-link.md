@@ -2,15 +2,13 @@
 
 ## Link
 
-> _Add the demo video URL here when ready._
+[Video Demo](https://drive.google.com/file/d/1XlL8xWzGbXYoXkiYBlcY4_fqs0GieJkV/view?usp=sharing)
 
-```
-[Video Demo](https://drive.google.com/...)
-```
+Direct URL: `https://drive.google.com/file/d/1XlL8xWzGbXYoXkiYBlcY4_fqs0GieJkV/view?usp=sharing`
 
 ## Access
 
-Grant viewing access to project reviewers as required.
+Grant viewing access to project reviewers as required (course instructor and evaluators).
 
 ## Contents (5–10 min)
 
