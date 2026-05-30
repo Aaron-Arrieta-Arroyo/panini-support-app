@@ -2,7 +2,7 @@
 
 ## Link
 
-> _Agregar enlace al video aquí antes de la entrega._
+> _Add the demo video URL here when ready._
 
 ```
 [Video Demo](https://drive.google.com/...)
@@ -10,7 +10,7 @@
 
 ## Access
 
-The video is accessible to: **rachel.bolivar.morales@una.cr**
+Grant viewing access to project reviewers as required.
 
 ## Contents (5–10 min)
 
