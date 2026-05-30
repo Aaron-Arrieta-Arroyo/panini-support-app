@@ -14,6 +14,8 @@ The app replaces the current email/spreadsheet workflow with a structured ticket
 
 ## Running the Project
 
+**→ See [INSTALL.md](INSTALL.md) for the direct step-by-step installation guide.**
+
 ### Requirements
 
 - Android Studio Hedgehog (2023.1.1) or later
