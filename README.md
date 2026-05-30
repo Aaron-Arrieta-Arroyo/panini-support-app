@@ -28,13 +28,11 @@ The app replaces the current email/spreadsheet workflow with a structured ticket
    cd Panini-Support-App
    ```
 
-2. Open the `app/` folder in Android Studio as an Android project (or open the root and let Gradle sync).
+2. Open the project root in Android Studio and let Gradle sync.
 
-3. Open the project root in Android Studio and let Gradle sync.
+3. Run on an emulator or device (API 26+).
 
-4. Run on an emulator or device (API 26+).
-
-5. Login credentials: **admin / admin123**
+4. Login credentials: **admin / admin123** (simulated locally; API login is prepared but not wired yet).
 
 ---
 
@@ -68,12 +66,12 @@ README.md           This file
 ```
 com.panini.supportapp
 ├── core/
-│   ├── events/         TicketEventBus (SharedFlow)
+│   ├── events/         TicketEventBus + TicketEvent (SharedFlow)
 │   └── featureflags/   FeatureFlags (centralized registry)
 ├── data/
-│   ├── dto/            API DTOs (Gson-annotated)
+│   ├── dto/            API DTOs aligned with /contracts/tickets-api.yaml
 │   ├── mock/           MockData + MockTicketRepository
-│   └── remote/         Retrofit service + NetworkClient + RemoteTicketRepository
+│   └── remote/         TicketApiService + NetworkClient + RemoteTicketRepository
 ├── domain/
 │   ├── model/          Ticket, Priority, TicketStatus, TicketCategory
 │   └── repository/     TicketRepository interface
@@ -81,7 +79,7 @@ com.panini.supportapp
     ├── common/         UiState<T>
     ├── navigation/     NavHost, Screen
     ├── theme/          Material 3 color scheme
-    ├── login/          LoginScreen + LoginViewModel
+    ├── login/          LoginScreen + LoginViewModel (simulated auth)
     ├── ticketlist/     TicketListScreen + TicketListViewModel
     ├── ticketdetail/   TicketDetailScreen + TicketDetailViewModel
     ├── createticket/   CreateTicketScreen + CreateTicketViewModel
@@ -94,13 +92,17 @@ com.panini.supportapp
 
 ### Event-based communication (SharedFlow)
 
-`TicketEventBus` is a singleton `SharedFlow` that broadcasts domain events across the app.  
-When a ticket is created or its priority changes, `TicketListViewModel` reacts automatically — no manual screen refresh.
+`TicketEventBus` broadcasts domain events. `TicketListViewModel` listens and updates the list without refetching:
 
 ```
-CreateTicketViewModel → TicketEventBus.emit(TicketCreated) → TicketListViewModel reacts
-TicketDetailViewModel → TicketEventBus.emit(PriorityUpdated) → list re-sorts automatically
+CreateTicketViewModel  → TicketCreated   → list inserts + re-sorts by priority
+TicketDetailViewModel  → StatusUpdated   → list updates status badge
+TicketDetailViewModel  → PriorityUpdated → list re-sorts by priority
 ```
+
+### Ticket list UI
+
+Each list card shows **title**, **priority badge**, and **status badge** only. Priority uses red / yellow / green; status uses red / blue / green / gray. Full ticket data appears on the detail screen.
 
 ### Feature Flags
 
@@ -109,13 +111,13 @@ Two flags are controlled from **Settings** (gear icon on the ticket list):
 | Flag | Effect |
 |---|---|
 | `ticketCreationEnabled` | Shows/hides the Create Ticket FAB |
-| `priorityUpdateEnabled` | Shows/hides the "Change Priority" button in ticket detail |
+| `priorityUpdateEnabled` | Shows/hides the **Change Priority** button in ticket detail |
 
 Flags use Compose `mutableStateOf`, so toggling them in Settings updates the UI immediately.
 
 ### Switching to real backend
 
-Change **one line** in `AppContainer.kt`:
+Change **one line** in `SupportApp.kt` (`AppContainer`):
 
 ```kotlin
 // Before (mock):
@@ -125,19 +127,29 @@ val ticketRepository: TicketRepository = MockTicketRepository()
 val ticketRepository: TicketRepository = RemoteTicketRepository(NetworkClient.ticketApiService)
 ```
 
-No ViewModel or screen changes required.
+No ViewModel or screen changes required. Wire JWT auth via `NetworkClient` when connecting `POST /auth/login`.
 
 ---
 
 ## API Contracts
 
-See `/contracts/tickets-api.yaml` — OpenAPI 3.0 specification covering all endpoints:  
-`POST /auth/login`, `GET/POST /tickets`, `GET /tickets/{id}`, `PATCH /tickets/{id}/status`, `PATCH /tickets/{id}/priority`
+See `/contracts/tickets-api.yaml` — OpenAPI 3.0 specification aligned with `TicketApiService` and DTOs:
+
+| Endpoint | App usage today |
+|---|---|
+| `POST /auth/login` | Prepared in Retrofit; login screen uses local simulation |
+| `GET /tickets` | `TicketRepository.getTickets()` |
+| `POST /tickets` | `TicketRepository.createTicket()` |
+| `GET /tickets/{id}` | `TicketRepository.getTicketById()` |
+| `PATCH /tickets/{id}/status` | `TicketRepository.updateTicketStatus()` |
+| `PATCH /tickets/{id}/priority` | `TicketRepository.updateTicketPriority()` |
+
+Domain enums (`Priority`, `TicketStatus`, `TicketCategory`) match API enum values exactly. UI display labels (`High`, `Open`, etc.) are client-side only.
 
 ---
 
 ## Notes for the Team
 
-- All mock data represents realistic Panini/FIFA 2026 operational scenarios (no generic Lorem ipsum data).
-- Architecture is intentionally simple: MVVM + Repository without use cases, since scope does not justify the overhead. Use cases can be added as an intermediate layer without touching ViewModels or screens.
-- `docs/architecture.md` contains full rationale for every technical decision.
+- All mock data represents realistic Panini/FIFA 2026 operational scenarios (no generic placeholder text).
+- Architecture is intentionally simple: MVVM + Repository without use cases.
+- `docs/architecture.md` contains full rationale, screen map, and contract alignment tables.

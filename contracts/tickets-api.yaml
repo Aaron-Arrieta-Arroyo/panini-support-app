@@ -4,7 +4,14 @@ info:
   description: |
     API contract for the Panini FIFA World Cup 2026 support ticket system.
     Defines all endpoints the mobile application will consume once the backend is available.
-    This contract was written before backend implementation to align both teams early.
+
+    Alignment with the Android app (package com.panini.supportapp):
+    - Retrofit interface: data/remote/TicketApiService.kt
+    - DTOs: data/dto/ (Gson @SerializedName matches snake_case fields below)
+    - Domain enums: Priority, TicketStatus, TicketCategory (wire values = enum names)
+    - Repository: TicketRepository maps to GET/POST/PATCH ticket endpoints
+    - Auth: POST /auth/login is defined here; the PoC login screen is simulated locally
+    - Base URL: https://api.panini-support.com/v1 (see NetworkClient.kt)
   version: "1.0.0"
   contact:
     name: Panini Mobile Team
