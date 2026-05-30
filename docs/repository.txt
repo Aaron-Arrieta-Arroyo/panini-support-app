@@ -1,0 +1,16 @@
+Panini Support App - Repository
+================================
+
+GitHub URL:
+https://github.com/Aaron-Arrieta-Arroyo/Panini-Support-App
+
+Clone:
+git clone https://github.com/Aaron-Arrieta-Arroyo/Panini-Support-App.git
+
+Branch: main
+
+Login (demo): admin / admin123
+
+Video demo: see /video/demo-link.md in the repository
+
+Install guide: see INSTALL.md in the repository
